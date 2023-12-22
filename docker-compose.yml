@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  vnc:
+    build:
+      context: .
+      dockerfile: docker/vnc.Dockerfile
+    image: shmocz/vnc:latest
+  tunnel:
+    build:
+      context: .
+      dockerfile: docker/tunnel.Dockerfile
+    image: shmocz/pycncnettunnel:latest
+  game:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: shmocz/pyra2yr:latest
+    volumes:
+      - .:/home/user/project
+    working_dir: /home/user/project

@@ -1,0 +1,40 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - v*
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Store version number
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Setup python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+      - name: Build and run checks
+        run: |
+          ./build.sh build
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: latest-release
+          path: dist/
+      - name: Upload New Release.
+        uses: softprops/action-gh-release@v1
+        with:
+          name: v${{ env.VERSION }}
+          tag_name: v${{ env.VERSION }}
+          body: pyra2yr wheel and source distribution.
+          files: |
+            dist/pyra2yr-${{ env.VERSION }}-py3-none-any.whl
+            dist/pyra2yr-${{ env.VERSION }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
