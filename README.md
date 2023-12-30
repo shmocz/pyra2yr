@@ -8,7 +8,7 @@ Python interface for ra2yrcpp.
 
 Install a pre-built wheel:
 ```bash
-pip install -U https://github.com/shmocz/pyra2yr/releases/download/v0.1.0/pyra2yr-0.1.0-py3-none-any.whl
+pip install -U https://github.com/shmocz/pyra2yr/releases/download/v0.1.1/pyra2yr-0.1.1-py3-none-any.whl
 ```
 
 ### (TODO) Method 2: Install with poetry

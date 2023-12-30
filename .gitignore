@@ -1,2 +1,6 @@
+*
+!*/
+!.gitignore
+!/pyra2yr/**
+!data/*
 *__pycache__*
-dist/

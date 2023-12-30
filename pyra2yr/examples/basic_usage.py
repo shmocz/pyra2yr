@@ -12,7 +12,7 @@ cfg_json = r"""
 {
   "base_directory": "./test_instances",
   "game_data_directory": "../ra2yrcpp/maingame",
-  "ini_overrides": ["../ra2yrcpp/test_data/cheap_items.ini"],
+  "ini_overrides": ["./pyra2yr/data/cheap_items.ini"],
   "spawner_name": "gamemd-spawn-ra2yrcpp.exe",
   "protocol": "zero",
   "syringe_dlls": [],
@@ -23,7 +23,7 @@ cfg_json = r"""
     "bridges_destroyable": true,
     "build_off_ally": true,
     "game_speed": 0,
-    "map_path": "../ra2yrcpp/test_data/dry_heat.map",
+    "map_path": "./pyra2yr/data/dry_heat.map",
     "mcv_redeploy": true,
     "multi_engineer": false,
     "ra2_mode": false,
