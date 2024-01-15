@@ -1,28 +1,16 @@
-#!/usr/bin/env python3
 import asyncio
-import json
-
-from pyra2yr.game import Game, MultiGameInstanceConfig
-from pyra2yr.test_util import ExManager, cfg_json
+from pyra2yr.test_util import BaseGameTest
 
 
-def get_config():
-    return MultiGameInstanceConfig.from_dict(json.loads(cfg_json))
+class BasicTest(BaseGameTest):
+    async def test_basic(self):
+        M0 = self.managers[0]
 
-
-async def basic_test():
-    with Game(cfg=get_config()):
-        managers = []
-        for i in range(2):
-            M = ExManager(port=14521 + i)
-            M.start()
-            managers.append(M)
-
-        for M in managers:
+        for M in self.managers:
             await M.M.wait_game_to_begin()
 
         async with asyncio.TaskGroup() as tg:
-            for M in managers:
+            for M in self.managers:
                 tg.create_task(M.deploy_mcv())
 
         # build stuff
@@ -35,7 +23,7 @@ async def basic_test():
             "battle_lab",
         ]:
             async with asyncio.TaskGroup() as tg:
-                for M in managers:
+                for M in self.managers:
                     o_mcv = next(
                         M.state.query_objects(
                             t=M.buildable_types.conyard, h=M.state.current_player()
@@ -46,8 +34,10 @@ async def basic_test():
                             getattr(M.buildable_types, bkey), o_mcv.coordinates
                         )
                     )
-        await M.M.wait_game_to_exit(timeout=3600)
-        await M.stop()
+                    # FIXME: Small delay to avoid buggy dupe event check for DoList
+                    await asyncio.sleep(0.5)
 
+        for M in self.managers:
+            await M.sell_all_buildings()
 
-asyncio.run(basic_test())
+        await M0.M.wait_game_to_exit()

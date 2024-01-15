@@ -2,5 +2,6 @@
 !*/
 !.gitignore
 !/pyra2yr/**
+!README.md
 !data/*
 *__pycache__*

@@ -1,5 +1,4 @@
 import asyncio
-import logging as lg
 import random
 import unittest
 
@@ -8,10 +7,8 @@ from ra2yrproto import ra2yr
 
 from pyra2yr.manager import PlaceStrategy
 from pyra2yr.state_manager import ObjectEntry
-from pyra2yr.test_util import MyManager
-from pyra2yr.util import array2coord, pdist, setup_logging
-
-setup_logging(level=lg.DEBUG)
+from pyra2yr.test_util import BaseGameTest, MyManager, ExManager
+from pyra2yr.util import array2coord, pdist
 
 
 PT_CONNIE = r"Conscript"
@@ -27,19 +24,12 @@ PT_SOV_WALL = r"Soviet\s+Wall"
 
 
 # TODO(shmocz): get rid of task groups
-class MultiTest(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.poll_frequency = 30
-        self.fetch_state_timeout = 10.0
-        self.managers: list[MyManager] = []
-        for i in range(2):
-            M = MyManager(
-                port=14521 + i,
-                poll_frequency=self.poll_frequency,
-                fetch_state_timeout=self.fetch_state_timeout,
-            )
-            M.start()
-            self.managers.append(M)
+class ComplexTest(BaseGameTest):
+    @classmethod
+    def get_test_config(cls):
+        cfg = super().get_test_config()
+        cfg.scenario.map_path = "./pyra2yr/data/dry_heat.map"
+        return cfg
 
     async def deploy_mcvs(self):
         for M in self.managers:
@@ -60,8 +50,11 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
     async def check_defense_structure_attack(self, M: MyManager):
         o_mcv = next(M.state.query_objects(p=PT_CONYARD, h=M.state.current_player()))
         # Build conscript and sentry
+        # Fix for dupe OutList
+        await asyncio.sleep(1.0)
         async with asyncio.TaskGroup() as tg:
             t = tg.create_task(M.produce_unit(PT_CONNIE))
+            await asyncio.sleep(2.0)
             o_sentry = await M.produce_and_place(
                 M.get_unique_tc(PT_SENTRY), o_mcv.coordinates
             )
@@ -76,7 +69,7 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
         await M.M.capture(objects=engi.get(), target=target.get())
         # Wait until captured
         await M.wait_state(
-            lambda: target.get().pointer_house == engi.get().pointer_house
+            lambda: target.get().pointer_house == engi.get().pointer_house, timeout=60
         )
         self.assertEqual(target.get().pointer_house, engi.get().pointer_house)
 
@@ -125,17 +118,21 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
             await M.M.sell(objects=o.get())
 
     async def do_build_stuff(self):
-        for bname in [PT_TESLA_REACTOR, PT_SOV_BARRACKS]:
+        for bkey in ["power", "barracks"]:
             async with asyncio.TaskGroup() as tg:
                 for m in self.managers:
                     o_mcv = next(
                         m.state.query_objects(p=PT_CONYARD, h=m.state.current_player())
                     )
                     tg.create_task(
-                        m.produce_and_place(m.get_unique_tc(bname), o_mcv.coordinates)
+                        m.produce_and_place(
+                            getattr(m.buildable_types, bkey), o_mcv.coordinates
+                        )
                     )
+                    # FIXME: Small delay due to DoList bug
+                    await asyncio.sleep(0.5)
 
-    async def do_build_sell_walls(self, M: MyManager):
+    async def do_build_sell_walls(self, M: ExManager):
         o_mcv = next(M.state.query_objects(p=PT_CONYARD, h=M.state.current_player()))
         # Get corner coordinates for walls
         D = await M.get_map_data()
@@ -151,11 +148,7 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
         # Get corners
         B = D.bbox(I) * 256
 
-        tc_wall = next(
-            M.state.query_type_class(
-                p=PT_SOV_WALL, abstract_type=ra2yr.ABSTRACT_TYPE_BUILDINGTYPE
-            )
-        )
+        tc_wall = M.buildable_types.wall
         # Build walls to corners
         for c in B:
             await M.produce_and_place(tc_wall, c, strategy=PlaceStrategy.ABSOLUTE)
@@ -167,6 +160,7 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         D = await M.get_map_data()
+        # logging.info("%s", D.m)
         I = (
             D.ind2sub(
                 np.array(
@@ -174,7 +168,8 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
                         c.index
                         for c in D.m.cells
                         if c.overlay_type_index == tc_wall_ol.array_index
-                    ]
+                    ],
+                    dtype=np.int64,
                 )
             )
             * 256
@@ -182,15 +177,13 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
         I = np.c_[I, np.ones((I.shape[0], 1)) * o_mcv.coordinates[2]]
 
         # Sell walls
-        # FIXME: check if z-coordintate fucks this up
         for c in I:
             await M.M.sell_walls(coordinates=array2coord(c))
             await asyncio.sleep(0.1)
-            lg.info("OK")
 
         # Check that no walls exist
 
-    async def test_multi_client(self):
+    async def test_complex(self):
         random.seed(1234)
 
         for M in self.managers:
@@ -199,7 +192,10 @@ class MultiTest(unittest.IsolatedAsyncioTestCase):
         await self.deploy_mcvs()
         await self.do_build_stuff()
 
-        M = self.managers[0]
+        # Get soviet player
+        M = next(
+            x for x in self.managers if x.state.current_player().faction == "Arabs"
+        )
         await self.do_build_sell_walls(M)
         await self.do_check_repair_building(M)
         await self.check_defense_structure_attack(M)

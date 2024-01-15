@@ -1,4 +1,4 @@
-FROM alpine:3.16.2
+FROM alpine:latest
 
 RUN apk add --update --no-cache python3 git
 RUN python3 -m ensurepip

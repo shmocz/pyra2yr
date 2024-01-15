@@ -1,10 +1,9 @@
 import asyncio
 import logging as lg
 import traceback
-from collections.abc import Iterable
 from datetime import datetime as dt
 from enum import Enum
-from typing import Any
+from typing import Any, Iterable
 
 from ra2yrproto import commands_game, commands_yr, core, ra2yr
 
@@ -50,7 +49,6 @@ class Manager:
         self.t = Clock()
         self.iters = 0
         self.show_stats_every = 30
-        self.delta = 0
         self.M = ManagerUtil(self)
         self._stop = asyncio.Event()
         self._main_task = None
@@ -72,7 +70,7 @@ class Manager:
         state = res_istate.data.initial_game_state
         self.state.sc.set_initials(state.object_types, state.prerequisite_groups)
 
-    async def on_state_update(self, s: ra2yr.GameState):
+    async def _on_state_update(self, s: ra2yr.GameState):
         if self.iters % self.show_stats_every == 0:
             delta = self.t.toc()
             lg.debug(
@@ -91,6 +89,7 @@ class Manager:
                 if fn:
                     # await asyncio.create_task(fn)
                     await fn()
+                # Execute callbacks if necessary
             except AssertionError:
                 raise
             except Exception:
@@ -98,13 +97,39 @@ class Manager:
         self.iters += 1
 
     async def get_state(self) -> ra2yr.GameState:
+        """Fetch latest state.
+
+        Returns
+        -------
+        ra2yr.GameState
+            State object.
+
+        Raises
+        ------
+        RuntimeError
+            If received data was invalid.
+        asyncio.exceptions.TimeoutError
+            If the retrieval timed out.
+        """
         cmd = commands_yr.GetGameState()
-        state = await self.client.exec_command(cmd, timeout=5.0)
+        state = await self.client.exec_command(cmd, timeout=self.fetch_state_timeout)
         if not state.result.Unpack(cmd):
             raise RuntimeError(f"failed to unpack state: {state}")
         return cmd.state
 
     async def run_command(self, c: Any) -> core.CommandResult:
+        """This blocks until result available
+
+        Parameters
+        ----------
+        c : Any
+            _description_
+
+        Returns
+        -------
+        core.CommandResult
+            _description_
+        """
         return await self.client.exec_command(c)
 
     async def run(self, c: Any = None, **kwargs) -> Any:
@@ -124,30 +149,34 @@ class Manager:
         res.result.Unpack(res_o)
         return res_o
 
-    # TODO: dont run async code in same thread as Manager due to performance reasons
     async def mainloop(self):
         d = 1 / self.poll_frequency
         deadline = dt.now().timestamp()
         while not self._stop.is_set():
+            s = None
+            await asyncio.sleep(min(d, max(deadline - dt.now().timestamp(), 0.0)))
+            deadline = dt.now().timestamp() + d
             try:
-                await asyncio.sleep(min(d, max(deadline - dt.now().timestamp(), 0.0)))
-                deadline = dt.now().timestamp() + d
                 s = await self.get_state()
-                if not self.state.should_update(s):
-                    continue
-                self.state.sc.set_state(s)
-                await self.on_state_update(s)
-                await self.state.state_updated()
+                # Await pending tasks
             except asyncio.exceptions.TimeoutError:
                 lg.error("Couldn't fetch result")
+            if not self.state.should_update(s):
+                continue
+            self.state.sc.set_state(s)
+
+            await self._on_state_update(s)
+            await self.state.state_updated()
 
     async def wait_state(self, cond, timeout=30, err=None):
         await self.state.wait_state(lambda x: cond(), timeout=timeout, err=err)
 
 
-class CommandBuilder:
-    @classmethod
-    def make_command(cls, c: Any, **kwargs):
+class ManagerUtil:
+    def __init__(self, manager: Manager):
+        self.manager = manager
+
+    def make_command(self, c: Any, **kwargs):
         for k, v in kwargs.items():
             if v is None:
                 continue
@@ -160,37 +189,6 @@ class CommandBuilder:
                     getattr(c, k).CopyFrom(v)
         return c
 
-    @classmethod
-    def add_event(
-        cls,
-        event_type: ra2yr.NetworkEvent = None,
-        house_index: int = 0,
-        frame_delay=0,
-        spoof=False,
-        **kwargs,
-    ):
-        return cls.make_command(
-            commands_yr.AddEvent(),
-            event=ra2yr.Event(event_type=event_type, house_index=house_index, **kwargs),
-            frame_delay=frame_delay,
-            spoof=spoof,
-        )
-
-    @classmethod
-    def make_produce(cls, rtti_id: int = 0, heap_id: int = 0, is_naval: bool = False):
-        return cls.add_event(
-            event_type=ra2yr.NETWORK_EVENT_Produce,
-            production=ra2yr.Event.Production(
-                rtti_id=rtti_id, heap_id=heap_id, is_naval=is_naval
-            ),
-        )
-
-
-class ManagerUtil:
-    def __init__(self, manager: Manager):
-        self.manager = manager
-        self.C = CommandBuilder
-
     # TODO(shmocz): low level stuff put elsewhere
     async def unit_command(
         self,
@@ -198,11 +196,16 @@ class ManagerUtil:
         action: ra2yr.UnitAction = None,
     ):
         return await self.manager.run(
-            self.C.make_command(
+            self.make_command(
                 commands_yr.UnitCommand(),
                 object_addresses=object_addresses,
                 action=action,
             )
+        )
+
+    async def add_event(self, e: ra2yr.Event):
+        return await self.manager.run(
+            self.make_command(commands_yr.AddEvent(), event=e)
         )
 
     async def unit_order(
@@ -323,7 +326,7 @@ class ManagerUtil:
         self, type_class: int = None, house_class: int = None, coordinates=None
     ) -> commands_yr.PlaceQuery:
         return await self.manager.run(
-            self.C.make_command(
+            self.make_command(
                 commands_yr.PlaceQuery(),
                 type_class=type_class,
                 house_class=house_class,
@@ -344,15 +347,12 @@ class ManagerUtil:
         self, object_addresses=None, event: ra2yr.NetworkEvent = None
     ):
         return await self.manager.run(
-            self.C.make_command(
+            self.make_command(
                 commands_yr.ClickEvent(),
                 object_addresses=object_addresses,
                 event=event,
             )
         )
-
-    async def sell_buildings(self, objects: list[ra2yr.Object] | ra2yr.Object):
-        return await self.unit_order(objects=objects, action=ra2yr.UNIT_ACTION_SELL)
 
     async def stop(self, objects: list[ra2yr.Object] | ra2yr.Object):
         return await self.unit_order(objects=objects, action=ra2yr.UNIT_ACTION_STOP)
@@ -374,30 +374,6 @@ class ManagerUtil:
             action=ra2yr.UNIT_ACTION_SELL_CELL, coordinates=coordinates
         )
 
-    async def produce(
-        self,
-        rtti_id: int = 0,
-        heap_id: int = 0,
-        is_naval: bool = False,
-    ):
-        return await self.manager.run(
-            self.C.make_produce(
-                rtti_id=rtti_id,
-                heap_id=heap_id,
-                is_naval=is_naval,
-            )
-        )
-
-    # TODO(shmocz): autodetect is_naval in the library
-    async def produce_building(self, heap_id: int = 0, is_naval: bool = False):
-        return await self.manager.run(
-            self.C.make_produce(
-                rtti_id=ra2yr.ABSTRACT_TYPE_BUILDINGTYPE,
-                heap_id=heap_id,
-                is_naval=is_naval,
-            )
-        )
-
     async def run_command(self, c: Any):
         return await self.manager.run_command(c)
 
@@ -416,7 +392,7 @@ class ManagerUtil:
         color: ra2yr.ColorScheme = None,
     ):
         return await self.manager.run(
-            self.C.make_command(
+            self.make_command(
                 commands_yr.AddMessage(),
                 message=message,
                 duration_frames=duration_frames,
@@ -434,10 +410,15 @@ class ManagerUtil:
         res = await self.read_value(map_data=ra2yr.MapData())
         return res.data.map_data
 
-    async def inspect_configuration(self, config: commands_yr.Configuration = None):
-        return await self.manager.run(
-            self.C.make_command(commands_yr.InspectConfiguration(), config=config)
+    async def inspect_configuration(
+        self, config: commands_yr.Configuration = None, update=False
+    ) -> commands_yr.Configuration:
+        cfg = await self.manager.run(
+            self.make_command(
+                commands_yr.InspectConfiguration(), config=config, update=update
+            )
         )
+        return cfg.config
 
     async def wait_game_to_begin(self, timeout=60):
         await self.manager.wait_state(
@@ -451,3 +432,36 @@ class ManagerUtil:
             lambda: self.manager.state.s.stage == ra2yr.STAGE_EXIT_GAME,
             timeout=timeout,
         )
+
+    async def set_single_step(self, v: bool):
+        """Enable/disable single step mode"""
+        cfg = await self.inspect_configuration()
+        cfg.single_step = v
+        return await self.inspect_configuration(cfg, True)
+
+    async def set_debug_log(self, v: bool):
+        return await self.inspect_configuration(
+            config=commands_yr.Configuration(debug_log=v)
+        )
+
+    async def execute_at(self, aw, frame: int):
+        """Execute awaitable at specific frame. Implies single step mode.
+
+        Parameters
+        ----------
+        aw : _type_
+        frame : int
+
+        Raises
+        ------
+        RuntimeError
+            If frame is less than current frame or if single step mode isn't active.
+        """
+        # TODO: This is non-trivial.
+        # Calling blocking functions (basically any command) insisde step()
+        # blocks the event loop with single step mode, because game loop remains blocked
+        # until next call to GetGameState.
+        #
+        # Possible workaround:
+        # Wrap command(s) inside asyncio tasks and await them after next state fetch
+        raise NotImplementedError()

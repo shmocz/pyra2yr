@@ -76,7 +76,7 @@ def get_compose_file(ws_ports: list[int], container_image: str) -> str:
         ComposeService(
             "novnc",
             "shmocz/vnc:latest",
-            command="/utils/novnc_proxy --vnc localhost:5901 --listen 6081",
+            command="/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen 6081",
             network_mode="service:vnc",
             user="root",
         ),
@@ -84,7 +84,7 @@ def get_compose_file(ws_ports: list[int], container_image: str) -> str:
             "wm",
             "shmocz/vnc:latest",
             command="sh -c 'exec openbox-session'",
-            depends_on=["vnc"],
+            depends_on=["vnc", "novnc"],
             network_mode="service:vnc",
             environment={"DISPLAY": ":1"},
         ),
@@ -140,6 +140,7 @@ class PlayerEntry:
     ai_difficulty: int = -1
     port: int = 0
     ws_port: int = -1
+    disable_chat: bool = False
     backend: str = None
 
     def __post_init__(self):
@@ -152,12 +153,12 @@ class PlayerEntry:
 @dataclass
 class ScenarioConfig:
     map_path: str
-    unit_count: int
-    start_credits: int
-    seed: int
-    ra2_mode: bool
-    short_game: bool
-    superweapons: bool
+    unit_count: int = 0
+    start_credits: int = 10000
+    seed: int = 0
+    ra2_mode: bool = False
+    short_game: bool = True
+    superweapons: bool = True
     game_speed: int = 0
     frame_send_rate: int = 1
     crates: bool = False
@@ -182,7 +183,7 @@ class MultiGameInstanceConfig:
     syringe_dlls: list = field(default_factory=list)
     # Either "docker" or "native"
     backend: str = "docker"
-    base_directory: Path = None
+    base_directory: Path = Path("./test_instances")
     container_image: str = "shmocz/pyra2yr:latest"
     docker_game_data: Path = Path("/home/user/RA2")
     game_data_directory: Path = None
@@ -234,8 +235,11 @@ class MultiGameInstanceConfig:
             ("Side", "side"),
             ("IsSpectator", "is_observer"),
             ("Port", "port"),
+            ("DisableChat", "disable_chat"),
         ]
-        return [(k, getattr(p, v)) for k, v in kmap] + [("Color", p.color.value)]
+        return [(k, getattr(p, v)) for k, v in kmap if getattr(p, v)] + [
+            ("Color", p.color.value)
+        ]
 
     def to_ini(self, player_index: int):
         player = next(p for p in self.players if p.index == player_index)
@@ -319,7 +323,7 @@ class GameInstance:
         self.spawn_path = self.instance_dir / "spawn.ini"
         self.wineprefix_dir = self.instance_dir / ".wine"
         self._container_name = f"game-{self.player_index}"
-        self._proc = None
+        self._proc: subprocess.Popen = None
         if not self.cfg.backend:
             self.cfg.backend = self.mcfg.backend
 
@@ -384,10 +388,11 @@ class GameInstance:
 
     def stop(self):
         prun(["docker", "stop", self._container_name])
-        self._proc.wait()
+        self.wait()
 
     def wait(self):
-        self._proc.wait()
+        if self._proc:
+            self._proc.wait()
 
 
 class Game:
@@ -421,7 +426,7 @@ class Game:
 
     def stop(self):
         """Stop all game instances."""
-        prun(["docker-compose", "down", "--remove-orphans", "-t", "1"])
+        prun(["docker", "compose", "down", "--remove-orphans", "-t", "1"])
         self._proc.kill()
         self._proc.wait()
         for g in self.games:
@@ -432,3 +437,10 @@ class Game:
         """Wait for game to exit."""
         for g in self.games:
             g.wait()
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, tb):
+        self.stop()

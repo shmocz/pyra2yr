@@ -1,7 +1,5 @@
 import asyncio
-import datetime
 import logging
-import struct
 import traceback
 from typing import Any, Dict
 
@@ -22,67 +20,6 @@ async def async_log_exceptions(coro):
 
 def logged_task(coro):
     return asyncio.create_task(async_log_exceptions(coro))
-
-
-class TCPClient:
-    def __init__(self, host: str, port: int):
-        self.host = host
-        self.port = port
-        self.reader = None
-        self.writer = None
-        self.__fmt = "<I"
-        self.__fmt_pack = "<I"
-        self._retry_delay = 1.0
-        self._timeout = 30
-
-    def pack_length(self, length: int):
-        return struct.pack(self.__fmt_pack, length)
-
-    async def _try_connect(self):
-        return await asyncio.open_connection(self.host, self.port)
-
-    async def connect(self):
-        t = datetime.datetime.now().timestamp()
-        d = 0
-        while d < self._timeout:
-            try:
-                self.reader, self.writer = await self._try_connect()
-                return
-            except Exception:
-                logging.warning(
-                    "connect failed, retrying (timeout in %ds)",
-                    round(self._timeout - d),
-                )
-                await asyncio.sleep(self._retry_delay)
-            d = datetime.datetime.now().timestamp() - t
-
-    async def aclose(self):
-        self.writer.close()
-        await self.writer.wait_closed()
-
-    async def read_message(self) -> bytes:
-        # read message length
-        data = await self.reader.read(struct.calcsize(self.__fmt))
-        message_length = struct.unpack(self.__fmt, data)[0]
-
-        # read the actual message
-        r = message_length
-        res = bytearray()
-        while r > 0:
-            chunk_bytes = await self.reader.read(message_length)
-            res.extend(chunk_bytes)
-            r -= len(chunk_bytes)
-        return bytes(res)
-
-    async def send_message(self, m: str | bytes):
-        # write length
-        data = m
-        if not isinstance(m, bytes):
-            data = m.encode()
-        self.writer.write(self.pack_length(len(data)))
-        # write actual message
-        self.writer.write(data)
-        await self.writer.drain()
 
 
 class WebSocketClient:
@@ -194,7 +131,26 @@ class DualClient:
         return ack
 
     # TODO: could wrap this into task and cancel at exit
-    async def exec_command(self, c: Any, timeout=None):
+    async def exec_command(self, c: Any, timeout: float = None):
+        """Execute command and return the result when it's polled back.
+
+        Parameters
+        ----------
+        c : Any
+            Command protobuf object
+        timeout : float, optional
+            Poll timeout, by default None
+
+        Returns
+        -------
+        Any
+            Command result protobuf object.
+
+        Raises
+        ------
+        asyncio.exceptions.TimeoutError
+            If results were not available within timeout.
+        """
         msg = await self.run_client_command(c)
         if self.queue_id < 0:
             self.queue_id = msg.queue_id
@@ -219,6 +175,7 @@ class DualClient:
 
     async def stop(self):
         self._stop.set()
+        # TODO: Cancel this immediately. Currently waits up to self.timeout seconds.
         await self._poll_task
         await self.conns["command"].close()
         await self.conns["poll"].close()

@@ -120,7 +120,7 @@ def prepare_wine_prefix(wineprefix_dir: Path):
 def run_gamemd(a):
     os.environ["WINEPREFIX"] = str(a.wineprefix_dir.absolute())
     os.environ["RA2YRCPP_PORT"] = str(a.port)
-    os.environ["RA2YRCPP_RECORD_PATH"] = str(int(time.time())) + ".pb.gz"
+    os.environ["RA2YRCPP_RECORD_PATH"] = ""
     prepare_wine_prefix(a.wineprefix_dir)
     create_symlinks(a.instance_dir, a.game_data_dir)
     subprocess.run(

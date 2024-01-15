@@ -5,7 +5,7 @@ class Docker:
     @classmethod
     def _common(cls, compose_files=None):
         cf = compose_files or ["docker-compose.yml"]
-        r = ["docker-compose"]
+        r = ["docker", "compose"]
         for c in cf:
             r.extend(["-f", c])
         return r
