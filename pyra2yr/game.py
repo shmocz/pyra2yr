@@ -324,7 +324,7 @@ class GameInstance:
             self.cfg.backend = self.mcfg.backend
 
     def generate_map_ini(self):
-        m = read_file(self.mcfg.scenario.map_path)
+        m = read_file(self.mcfg.scenario.map_path, encoding="latin-1")
         if self.mcfg.ini_overrides:
             write_file(
                 self.map_path,
