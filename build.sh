@@ -35,4 +35,8 @@ function build() {
 	set +e
 }
 
+function test() {
+	.venv/bin/poetry run python -m unittest
+}
+
 $1
