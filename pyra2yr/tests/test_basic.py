@@ -3,12 +3,26 @@ from pyra2yr.test_util import BaseGameTest
 
 
 class BasicTest(BaseGameTest):
-    async def test_basic(self):
-        M0 = self.managers[0]
-
-        for M in self.managers:
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        for _, M in self.all_managers:
             await M.M.wait_game_to_begin()
 
+    async def asyncTearDown(self):
+        for _, M in self.all_managers:
+            await M.M.wait_game_to_exit(20)
+        await super().asyncTearDown()
+
+    async def test_mcv_deploy_sell(self):
+        async with asyncio.TaskGroup() as tg:
+            for M in self.managers:
+                tg.create_task(M.deploy_mcv())
+
+        # FIXME: yrpp-spawner freezes at game exit if this is used
+        for M in self.managers:
+            await M.sell_all_buildings()
+
+    async def test_basic_build(self):
         async with asyncio.TaskGroup() as tg:
             for M in self.managers:
                 tg.create_task(M.deploy_mcv())
@@ -37,7 +51,6 @@ class BasicTest(BaseGameTest):
                     # FIXME: Small delay to avoid buggy dupe event check for DoList
                     await asyncio.sleep(0.5)
 
+        # FIXME: yrpp-spawner freezes at game exit if this is used
         for M in self.managers:
             await M.sell_all_buildings()
-
-        await M0.M.wait_game_to_exit()

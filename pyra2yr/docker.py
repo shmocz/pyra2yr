@@ -53,7 +53,7 @@ class Docker:
     @classmethod
     def up(cls, services, compose_files=None):
         r = cls._common(compose_files)
-        r.extend(["up", "--abort-on-container-exit"])
+        r.extend(["up", "--wait"])
         r.extend(services)
         return r
 

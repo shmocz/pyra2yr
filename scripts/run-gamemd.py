@@ -5,14 +5,15 @@ import os
 import subprocess
 import argparse
 import traceback
+import datetime as dt
 from pathlib import Path
 import re
 import logging
 
 NAME_SPAWNER = "gamemd-spawn.exe"
 NAME_SPAWNER_PATCHED = "gamemd-spawn-ra2yrcpp.exe"
-NAME_SPAWNER_SYRINGE = "gamemd-spawn-syr.exe"
 
+# TODO: handle missing entries
 FILE_PATHS = f"""\
 BINKW32.DLL
 spawner.xdp
@@ -23,20 +24,36 @@ thememd.mix
 langmd.mix
 language.mix
 expandmd01.mix
+expandmd02.mix
+expandspawn01.mix
+expandspawn02.mix
+ecache97.mix
+expand97.mix
 mapsmd03.mix
 maps02.mix
 maps01.mix
+multimd.mix
+MULTI.MIX
+RA2MD.ico
 Ra2.tlb
+ra2md.lcf
+yuri.lcf
+Ra2.lcf
 INI
 Maps
 RA2.INI
 RA2MD.ini
+NOTES.ICO
+RA2.ICO
 ddraw.ini
 spawner2.xdp
 Blowfish.dll
+Blowfish.tlb
 ddraw.dll
 Syringe.exe
+cncnet.fnt
 cncnet5.dll
+gamemd.exe
 {NAME_SPAWNER}\
 """
 
@@ -66,9 +83,10 @@ def prun(args, **kwargs):
 def create_symlinks(instance_dir: Path, game_data_dir: Path):
     """Symlink relevant data files for this test instance."""
     # Clear old symlinks
-    for p in os.listdir(instance_dir):
-        if os.path.islink(p):
-            os.unlink(p)
+    for fname in os.listdir(instance_dir):
+        p = instance_dir / fname
+        if p.is_symlink():
+            p.unlink()
 
     for p in re.split(r"\s+", FILE_PATHS):
         mklink(instance_dir / p, game_data_dir / p)
@@ -117,17 +135,49 @@ def prepare_wine_prefix(wineprefix_dir: Path):
         raise
 
 
+def find_pid(program_name):
+    try:
+        pgrep_output = subprocess.check_output(["pgrep", "-f", program_name], text=True)
+        pids = [int(pid) for pid in pgrep_output.split()]
+        if len(pids) > 1:
+            logging.warning("Ambiguous pids: %s", pids)
+        return pids[0] if len(pids) == 1 else None
+    except subprocess.CalledProcessError:
+        logging.warning("couldn't find pid %s", program_name)
+        return None
+
+
+def run_syringe(program, cwd=None, timeout=20.0):
+    cmdline = ["wine", "Syringe.exe", program + " ", "-SPAWN", "-CD", "-LOG"]
+    subprocess.run(cmdline, cwd=cwd)
+    deadline = dt.datetime.now() + dt.timedelta(seconds=timeout)
+    while dt.datetime.now() < deadline:
+        pid = find_pid(program)
+        if pid is None:
+            time.sleep(0.5)
+    if pid is None:
+        raise RuntimeError("gamemd failed to launch")
+    # Wait until process exits
+    try:
+        while os.path.exists(f"/proc/{pid}"):
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
+
+
 def run_gamemd(a):
     os.environ["WINEPREFIX"] = str(a.wineprefix_dir.absolute())
-    os.environ["RA2YRCPP_PORT"] = str(a.port)
-    os.environ["RA2YRCPP_RECORD_PATH"] = ""
     prepare_wine_prefix(a.wineprefix_dir)
     create_symlinks(a.instance_dir, a.game_data_dir)
-    subprocess.run(
-        ["wine", a.spawner_name, "-SPAWN"], cwd=str(a.instance_dir.absolute())
-    )
+    cmdline = ["wine", a.spawner_name, "-SPAWN"]
+    cwd = str(a.instance_dir.absolute())
+    if a.syringe:
+        run_syringe("gamemd.exe", cwd=cwd)
+    else:
+        subprocess.run(cmdline, cwd=cwd)
 
 
+# TODO: Help string
 def parse_args():
     a = argparse.ArgumentParser(
         description="RA2YR game launcher helper",
@@ -136,14 +186,18 @@ def parse_args():
     a.add_argument("-w", "--wineprefix-dir", type=Path)
     a.add_argument("-i", "--instance-dir", type=Path)
     a.add_argument("-g", "--game-data-dir", type=Path)
-    a.add_argument("-p", "--port", type=int)
     a.add_argument("-s", "--spawner-name", type=str)
+    a.add_argument("-S", "--syringe", help="Use syringe", action="store_true")
     a.set_defaults(func=run_gamemd)
     return a.parse_args()
 
 
 def main():
     a = parse_args()
+    FORMAT = (
+        "[%(levelname)s] %(asctime)s %(module)s.%(filename)s:%(lineno)d: %(message)s"
+    )
+    logging.basicConfig(level=logging.DEBUG, format=FORMAT)
     a.func(a)
 
 

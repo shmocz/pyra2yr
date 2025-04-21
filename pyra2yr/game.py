@@ -5,6 +5,8 @@ from pathlib import Path
 from dataclasses import dataclass, field, fields
 from enum import Enum
 from yaml import dump
+from google.protobuf.json_format import MessageToJson
+from ra2yrproto import commands_yr
 from pyra2yr.util import read_file, write_file
 from pyra2yr.docker import Docker, ComposeService
 
@@ -77,6 +79,7 @@ def get_compose_file(ws_ports: list[int], container_image: str) -> str:
             "novnc",
             "shmocz/vnc:latest",
             command="/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen 6081",
+            depends_on=["vnc"],
             network_mode="service:vnc",
             user="root",
         ),
@@ -193,6 +196,7 @@ class MultiGameInstanceConfig:
     spawner_name: str = "gamemd-spawn-ra2yrcpp.exe"
     tunnel_address: str = "0.0.0.0"
     tunnel_port: int = 50000
+    use_syringe: bool = False
 
     def __post_init__(self):
         for k in ["color", "location", "name"]:
@@ -338,43 +342,53 @@ class GameInstance:
     def generate_spawn_ini(self):
         write_file(self.spawn_path, self.mcfg.to_ini(self.player_index))
 
+    def generate_ra2yrcpp_config(self):
+        C = commands_yr.Configuration(
+            debug_log=False,
+            allowed_hosts_regex=r"0.0.0.0|127.0.0.1|172..+",
+            port=self.cfg.ws_port,
+            log_filename="ra2yrcpp.log",
+        )
+        write_file(self.instance_dir / "ra2yrcpp.json", MessageToJson(C))
+
     def prepare_instance_directory(self):
         if not self.instance_dir.exists():
             self.instance_dir.mkdir(parents=True)
         self.generate_map_ini()
         self.generate_spawn_ini()
+        self.generate_ra2yrcpp_config()
 
     def __start_native(self):
         raise NotImplementedError()
 
     def __start_docker(self):
-        cmd = Docker.run(
-            [
-                "./scripts/run-gamemd.py",
-                "-w",
-                self.wineprefix_dir,
-                "-i",
-                self.instance_dir,
-                "-g",
-                self.mcfg.docker_game_data,
-                "-p",
-                self.cfg.ws_port,
-                "-s",
-                self.mcfg.spawner_name,
-            ],
+        cmd = [
+            "./scripts/run-gamemd.py",
+            "-w",
+            self.wineprefix_dir,
+            "-i",
+            self.instance_dir,
+            "-g",
+            self.mcfg.docker_game_data,
+            "-s",
+            self.mcfg.spawner_name,
+        ]
+        if self.mcfg.use_syringe:
+            cmd.append("--syringe")
+        cmd_full = Docker.run(
+            cmd,
             service="game",
             name=self._container_name,
             env=[
                 ("DISPLAY", ":1"),
                 ("HOME", "/home/user"),
-                ("RA2YRCPP_GAME_DIR", "/home/user/RA2"),
                 ("WINEARCH", "win32"),
             ],
             uid=self.game_uid,
             compose_files=["docker-compose.instance.yml"],
             volumes=[(self.mcfg.game_data_directory.absolute(), "/home/user/RA2")],
         )
-        return popen(cmd)
+        return popen(cmd_full)
 
     # TODO: call non-member fn
     def start(self):
@@ -415,11 +429,16 @@ class Game:
         )
         # TODO(shmocz): monitor in separate thread for errors
         self._proc = popen(
-            Docker.up(["vnc", "novnc", "wm", "tunnel"], compose_files=[c])
+            Docker.up(
+                ["vnc", "novnc", "wm", "tunnel"],
+                compose_files=[c],
+            )
         )
         # hack to wait until tunnel service has started
         try_fn(
-            lambda: prun(["docker", "exec", "pyra2yr-tunnel-1", "ls", "-l"], check=True)
+            lambda: prun(
+                ["docker", "compose", "-f", c, "exec", "tunnel", "ls", "-l"], check=True
+            )
         )
         for g in self.games:
             g.start()

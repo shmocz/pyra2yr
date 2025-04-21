@@ -2,6 +2,7 @@ import asyncio
 import unittest
 import logging
 import json
+import os
 from functools import cached_property
 from dataclasses import dataclass
 from enum import Enum
@@ -275,34 +276,6 @@ class MyManager(Manager):
         return MapData(W)
 
 
-class BaseGameTest(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        setup_logging()
-        self.poll_frequency = 30
-        self.fetch_state_timeout = 10.0
-        self.all_managers: list[tuple[PlayerEntry, ExManager]] = []
-        self.game = Game(cfg=self.get_test_config())
-        self.game.start()
-        for P in self.game.cfg.players:
-            M = ExManager(port=P.ws_port)
-            M.start()
-            self.all_managers.append((P, M))
-
-    @cached_property
-    def managers(self):
-        return [M for P, M in self.all_managers if not P.is_observer]
-
-    async def asyncTearDown(self):
-        async with asyncio.TaskGroup() as tg:
-            for _, M in self.all_managers:
-                tg.create_task(M.stop())
-        self.game.stop()
-
-    @classmethod
-    def get_test_config(cls):
-        return MultiGameInstanceConfig.from_dict(json.loads(cfg_json))
-
-
 class ExManager(MyManager):
     @cached_property
     def buildable_types(self) -> BuildableTypes:
@@ -337,6 +310,41 @@ class ExManager(MyManager):
             h=self.state.current_player(), a=ra2yr.ABSTRACT_TYPE_BUILDING
         ):
             await self.M.sell(objects=o.get())
+
+
+class BaseGameTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        setup_logging()
+        self.poll_frequency = 30
+        self.fetch_state_timeout = 10.0
+        self.all_managers: list[tuple[PlayerEntry, ExManager]] = []
+        for P in self.game.cfg.players:
+            M = ExManager(port=P.ws_port)
+            M.start()
+            self.all_managers.append((P, M))
+
+    def run(self, result=None):
+        with Game(cfg=self.get_test_config()) as G:
+            self.game = G
+            return super().run(result)
+
+    @cached_property
+    def managers(self) -> list[tuple[PlayerEntry, ExManager]]:
+        return [M for P, M in self.all_managers if not P.is_observer]
+
+    async def asyncTearDown(self):
+        async with asyncio.TaskGroup() as tg:
+            for _, M in self.all_managers:
+                tg.create_task(M.stop())
+        self.all_managers.clear()
+        del self.managers
+
+    @classmethod
+    def get_test_config(cls):
+        cfg = MultiGameInstanceConfig.from_dict(json.loads(cfg_json))
+        if os.environ.get("USE_SYRINGE", None) is not None:
+            cfg.use_syringe = True
+        return cfg
 
 
 class SingleStepManager(ExManager):
