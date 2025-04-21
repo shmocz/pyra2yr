@@ -13,7 +13,7 @@ aiohttp = "^3.9.1"
 protobuf = "4.25.1"
 pyyaml = "^6.0.1"
 coverage = "^7.4.0"
-ra2yrproto = { url = "https://github.com/shmocz/ra2yrproto/releases/download/v4/ra2yrproto-4-py3-none-any.whl" }
+ra2yrproto = { url = "https://github.com/shmocz/ra2yrproto/releases/download/v5/ra2yrproto-5-py3-none-any.whl" }
 
 [tool.black]
 line-length = 88
