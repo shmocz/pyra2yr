@@ -72,6 +72,7 @@ class ComposeService:
     cap_add: list[str] = field(default_factory=list)
     working_dir: str = None
     volumes: list[str] = field(default_factory=list)
+    ipc: str = None
 
     def to_dict(self):
         d = asdict(self)

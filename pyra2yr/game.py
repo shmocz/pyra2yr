@@ -57,62 +57,90 @@ def get_game_uid():
     )
 
 
-def get_compose_file(ws_ports: list[int], container_image: str) -> str:
-    s = {"version": "3.9"}
-    ports = [6081, 12001, 5901, 50000] + ws_ports
+def get_compose_dict(
+    ws_ports: list[int],
+    container_image: str,
+    vnc_port: int = 5901,
+    novnc_port: int = 6081,
+    tunnel_port: int = 50000,
+    x11_socket: Path = None,
+) -> str:
+    ports = [tunnel_port] + ws_ports
+    use_vnc = x11_socket is None
+
+    if use_vnc:
+        ports.extend([novnc_port, vnc_port])
+    if not use_vnc and not x11_socket.exists():
+        raise RuntimeError(f"Socket path doesn't exist: {x11_socket}")
     if len(set(ports)) != len(ports) or any(p < 1 for p in ports):
         raise RuntimeError(
             f"All ports must be unique and positive numbers. Got: {ports}"
         )
-    srv = [
+
+    game_ipc = None if use_vnc else "host"
+    game_volumes = [".:/home/user/project"]
+    game_deps = ["wm"] if use_vnc else []
+    if not use_vnc:
+        game_volumes.append(f"{x11_socket}:/tmp/{x11_socket.name}:rw")
+
+    base_services = [
+        ComposeService(
+            "tunnel",
+            "shmocz/pycncnettunnel:latest",
+            stop_signal="SIGKILL",
+            ports=[f"{p}:{p}" for p in ports],
+        ),
+        ComposeService(
+            "game",
+            container_image,
+            network_mode="service:tunnel",
+            stop_signal="SIGKILL",
+            volumes=game_volumes,
+            working_dir="/home/user/project",
+            depends_on=game_deps,
+            cap_add=["SYS_PTRACE"],
+            environment={"DISPLAY": ":1"},
+            ipc=game_ipc,
+        ),
+    ]
+    vnc_services = [
         ComposeService(
             "vnc",
             "shmocz/vnc:latest",
             command=(
-                "sh -c 'Xvnc :1 -depth 24 -geometry $$RESOLUTION -br -rfbport=5901 "
+                "sh -c 'Xvnc :1 -depth 24 -geometry $$RESOLUTION -br "
+                f"-rfbport={vnc_port} "
                 "-SecurityTypes None -AcceptSetDesktopSize=off'"
             ),
-            ports=[f"{p}:{p}" for p in ports],
+            network_mode="service:tunnel",
             environment={"RESOLUTION": "1280x1024"},
         ),
         ComposeService(
             "novnc",
             "shmocz/vnc:latest",
-            command="/noVNC/utils/novnc_proxy --vnc localhost:5901 --listen 6081",
+            command=(
+                "/noVNC/utils/novnc_proxy --vnc "
+                f"localhost:{vnc_port} --listen {novnc_port}"
+            ),
             depends_on=["vnc"],
-            network_mode="service:vnc",
+            network_mode="service:tunnel",
             user="root",
         ),
         ComposeService(
             "wm",
             "shmocz/vnc:latest",
             command="sh -c 'exec openbox-session'",
-            depends_on=["vnc", "novnc"],
-            network_mode="service:vnc",
+            network_mode="service:tunnel",
+            depends_on=["vnc"],
             environment={"DISPLAY": ":1"},
         ),
-        ComposeService(
-            "tunnel",
-            "shmocz/pycncnettunnel:latest",
-            network_mode="service:vnc",
-            stop_signal="SIGKILL",
-        ),
-        ComposeService(
-            "game",
-            container_image,
-            network_mode="service:vnc",
-            stop_signal="SIGKILL",
-            volumes=[".:/home/user/project"],
-            working_dir="/home/user/project",
-            depends_on=["wm"],
-            cap_add=["SYS_PTRACE"],
-        ),
     ]
-    s["services"] = {}
-    for x in srv:
-        s["services"].update(x.to_dict())
 
-    return dump(s, Dumper=Dumper)
+    D = {"services": {}}
+    for x in base_services + (vnc_services if use_vnc else []):
+        D["services"].update(x.to_dict())
+
+    return D
 
 
 class ProtocolVersion(Enum):
@@ -197,6 +225,7 @@ class MultiGameInstanceConfig:
     tunnel_address: str = "0.0.0.0"
     tunnel_port: int = 50000
     use_syringe: bool = False
+    x11_socket: Path = None
 
     def __post_init__(self):
         for k in ["color", "location", "name"]:
@@ -424,13 +453,17 @@ class Game:
         # This needs to be generated dynamically to properly set port numbers
         c = "docker-compose.instance.yml"
         ws_ports = [p.ws_port for p in self.human_players]
-        write_file(
-            c, get_compose_file(ws_ports, container_image=self.cfg.container_image)
+        D = get_compose_dict(
+            ws_ports,
+            container_image=self.cfg.container_image,
+            x11_socket=self.cfg.x11_socket,
         )
+        write_file(c, dump(D, Dumper=Dumper))
+        base_services = [k for k in D["services"] if k != "game"]
         # TODO(shmocz): monitor in separate thread for errors
         self._proc = popen(
             Docker.up(
-                ["vnc", "novnc", "wm", "tunnel"],
+                base_services,
                 compose_files=[c],
             )
         )

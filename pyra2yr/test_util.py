@@ -6,6 +6,7 @@ import os
 from functools import cached_property
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 import numpy as np
 from ra2yrproto import commands_yr, core, ra2yr
@@ -344,6 +345,8 @@ class BaseGameTest(unittest.IsolatedAsyncioTestCase):
         cfg = MultiGameInstanceConfig.from_dict(json.loads(cfg_json))
         if os.environ.get("USE_SYRINGE", None) is not None:
             cfg.use_syringe = True
+        if os.environ.get("USE_X11", False):
+            cfg.x11_socket = Path(os.environ.get("X11_SOCKET", "/tmp/.X11-unix"))
         return cfg
 
 
